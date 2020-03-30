@@ -6,6 +6,14 @@
 # opkg list-installed | cut -f1 -d' ' | egrep "^(ip-full)$" | wc -l
 # opkg list-installed | cut -f1 -d' ' | egrep "^(redsocks)$" | wc -l
 
+
+# pass the name of a file containing suitable variables to load
+if [ -n "$1" ] ; then
+    . "$1"
+fi
+
+# Update these to your preferred values or
+# set them in the environment before running the script
 victim_mac=${victim_mac:-02:00:00:00:00:01}
 victim_ip=${victim_ip:-192.168.1.2}
 router_mac=${router_mac:-02:00:00:00:00:02}
