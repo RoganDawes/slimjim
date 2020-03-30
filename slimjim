@@ -77,6 +77,6 @@ iptables -t nat -N REDSOCKS
 iptables -t nat -A REDSOCKS -p tcp -j REDIRECT --to-ports 12345
 
 # Make sure that traffic to or from the victim enters the REDSOCKS chain
-iptables -t nat -I PREROUTING 1 -p tcp -s $victim_ip -j REDSOCKS
-iptables -t nat -I PREROUTING 1 -p tcp -d $victim_ip -j REDSOCKS
+# iptables -t nat -I PREROUTING 1 -p tcp -s $victim_ip -j REDSOCKS
+# iptables -t nat -I PREROUTING 1 -p tcp -d $victim_ip -j REDSOCKS
 
