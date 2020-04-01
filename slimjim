@@ -30,10 +30,30 @@ br_dev=${br_dev:-pitm}
 br_dev_mac=${br_dev_mac:-0:1:1:1:1:1}
 br_dev_ip=${br_dev_ip:-169.254.0.1}
 
+PID=$$
+# Check if we are in the 'pitm' network namespace
+if [ "`ip netns identify $PID`" != "pitm" ] ; then
+
+	# Check if the network namespace exists, or create a network namespace to run pitm operations in
+	# Make sure that the $victim_dev and $router_dev interfaces are inside the namespace
+	ip netns list | grep -q pitm || \
+		ip netns add pitm && \
+		ip link set ${victim_dev} netns pitm && \
+		ip link set ${router_dev} netns pitm
+
+	# Now re-exec the script inside the 'pitm' namespace
+	ip netns exec pitm $0 $*
+	exit
+fi
+
 # make sure iptables is called at various levels
 sysctl -q -w net.bridge.bridge-nf-call-arptables=1
 sysctl -q -w net.bridge.bridge-nf-call-ip6tables=1
 sysctl -q -w net.bridge.bridge-nf-call-iptables=1
+
+# disable IPv6 on the upstream and downstream interfaces
+sysctl -q -w net.ipv6.conf.${victim_dev}.disable_ipv6=1
+sysctl -q -w net.ipv6.conf.${router_dev}.disable_ipv6=1
 
 # clear existing firewall rules
 ebtables -t filter -F
@@ -58,6 +78,8 @@ ebtables -t filter -I OUTPUT -d BGA -j DROP
 if ! brctl show $br_dev > /dev/null 2>&1 ; then
 	brctl addbr $br_dev
 	brctl addif $br_dev $victim_dev $router_dev
+	# disable IPv6 on the bridge too
+	sysctl -q -w net.ipv6.conf.${br_dev}.disable_ipv6=1
 fi
 
 # Configure the two interfaces of the bridge
@@ -112,3 +134,8 @@ iptables -t nat -A REDSOCKS -p tcp -j REDIRECT --to-ports 12345
 # iptables -t nat -I PREROUTING 1 -p tcp -s $victim_ip -j REDSOCKS
 # iptables -t nat -I PREROUTING 1 -p tcp -d $victim_ip -j REDSOCKS
 
+echo "Spawning a 'screen' instance inside the pitm network namesapce"
+echo "Access it using:"
+echo "\tscreen -R -D -S pitm"
+
+screen -d -m -S pitm
