@@ -22,7 +22,13 @@ if [ "`ip netns identify $PID`" != "pitm" ] ; then
 		ip link set ${victim_dev} netns pitm && \
 		ip link set ${router_dev} netns pitm && \
 		ip netns exec pitm ip addr add dev lo 127.0.0.1/8 && \
-		ip netns exec pitm ip link set dev lo up
+		ip netns exec pitm ip link set dev lo up && \
+		ip link add veth1 netns pitm type veth peer name veth2 && \
+		ip netns exec pitm ip addr add dev veth1 169.254.20.1/24 && \
+		ip netns exec pitm ip link set dev veth1 up && \
+		ip addr add dev veth2 169.254.20.2/24 && \
+		ip link set dev veth2 up && \
+		ip netns exec pitm /usr/sbin/sshd -o "ListenAddress = 169.254.20.1"
 
 	echo "Spawning a 'screen' instance inside the pitm network namesapce"
 	echo "Access it using:"
@@ -34,6 +40,7 @@ if [ "`ip netns identify $PID`" != "pitm" ] ; then
 fi
 
 # make sure iptables is called at various levels
+modprobe br_netfilter
 sysctl -q -w net.bridge.bridge-nf-call-arptables=1
 sysctl -q -w net.bridge.bridge-nf-call-ip6tables=1
 sysctl -q -w net.bridge.bridge-nf-call-iptables=1
