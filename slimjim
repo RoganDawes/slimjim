@@ -40,7 +40,7 @@ if [ "`ip netns identify $PID`" != "pitm" ] ; then
 	exec screen -R -D -S pitm
 fi
 
-DIR=`basename $0`
+DIR=$(cd $(dirname $0) && pwd)
 
 # make sure iptables is called at various levels
 modprobe br_netfilter
