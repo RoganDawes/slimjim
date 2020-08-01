@@ -93,6 +93,14 @@ ip link set dev $br_dev up
 ip link set dev $victim_dev up
 ip link set dev $router_dev up
 
+# Start pitm_snoop early to ensure we catch all the traffic
+# pitm_snoop.py monitors link local addresses, as well as routes to
+# other networks, and also DNS lookups, writing resolved names to
+# hostsdir/hostname, as well as updating /tmp/pitm/resolv.conf with
+# ip addresses of observed name servers
+mkdir -p /tmp/pitm/hostsdir
+screen -S pitm -X screen -t "pitm_snoop" ${DIR}/pitm_snoop.py
+
 # Any packets seen coming "in" on $victim_dev MUST have the victim's MAC as the source
 echo "Waiting for victim MAC"
 victim_mac=$(tcpdump -c1 -Q in -i ${victim_dev} -nnel 2> /dev/null | awk '{print $2}')
@@ -156,15 +164,8 @@ iptables -t nat -A REDSOCKS -p tcp -j REDIRECT --to-ports 12345
 # IFTOP is possibly useful to see what sort of network traffic the victim is generating
 screen -S pitm -X screen -t "iftop" /usr/sbin/iftop -npNP -i pitm
 
-# pitm_snoop.py monitors link local addresses, as well as routes to
-# other networks, and also DNS lookups, writing resolved names to
-# hostsdir/hostname, as well as updating /tmp/pitm/resolv.conf with
-# ip addresses of observed name servers
-mkdir -p /etc/netns/pitm/ && touch /etc/netns/pitm/resolv.conf
-mkdir -p /tmp/pitm/hostsdir
-screen -S pitm -X screen -t "pitm_snoop" ${DIR}/pitm_snoop.py
-
 # dnsmasq can make the observed DNS queries available without any extra network traffic
+mkdir -p /etc/netns/pitm/ && touch /etc/netns/pitm/resolv.conf
 screen -S pitm -X screen -t "dnsmasq" /usr/sbin/dnsmasq --no-daemon --no-resolv -z -i lo --hostsdir=/tmp/pitm/hostsdir --bogus-priv
 
 echo "Press Ctrl-C to close this window"
