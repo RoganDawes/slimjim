@@ -160,6 +160,7 @@ screen -S pitm -X screen -t "iftop" /usr/sbin/iftop -npNP -i pitm
 # other networks, and also DNS lookups, writing resolved names to
 # hostsdir/hostname, as well as updating /tmp/pitm/resolv.conf with
 # ip addresses of observed name servers
+mkdir -p /etc/netns/pitm/ && touch /etc/netns/pitm/resolv.conf
 mkdir -p /tmp/pitm/hostsdir
 screen -S pitm -X screen -t "pitm_snoop" ${DIR}/pitm_snoop.py
 
