@@ -118,7 +118,7 @@ while read null MAC1 null MAC2 null null null IP1 null IP2 null ; do
 			victim_ip=$IP2
 		fi
 		case "${victim_ip}" in
-			0.0.0.0|239.*.*.*|240.*.*.*|255.*.*.*)
+			0.0.0.0|169.254.*.*|239.*.*.*|240.*.*.*|255.*.*.*)
 				victim_ip=''
 				;;
 		esac
