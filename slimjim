@@ -1,7 +1,5 @@
 #!/bin/bash
 
-screen -R -D -S pitm && exit
-
 # Override the various device names if required
 victim_dev=${victim_dev:-lan}
 router_dev=${router_dev:-wan}
@@ -16,11 +14,6 @@ br_dev_ip=${br_dev_ip:-169.254.0.1}
 PID=$$
 # Check if we are not in the 'pitm' network namespace
 if [ "`ip netns identify $PID`" != "pitm" ] ; then
-
-	# make a directory to contain namespace-specific files
-	mkdir -p /etc/netns/pitm/
-	touch /etc/netns/pitm/resolv.conf
-	echo "pitm" > /etc/netns/pitm/hostname
 
 	# Check if the network namespace exists, or create a network namespace to run pitm operations in
 	# Make sure that the $victim_dev and $router_dev interfaces are inside the namespace
@@ -70,13 +63,13 @@ iptables -t raw -F
 # Safety Rules: Make sure we don't send any packets with our own identity
 victim_dev_mac=$(ip addr show ${victim_dev} | grep ether | (read null ether null ; echo $ether))
 router_dev_mac=$(ip addr show ${router_dev} | grep ether | (read null ether null ; echo $ether))
-ebtables -t nat -I POSTROUTING -o ${br_dev} -s ${br_dev_mac} -j DROP
-ebtables -t nat -I POSTROUTING -o ${br_dev} -s ${victim_dev_mac} -j DROP
-ebtables -t nat -I POSTROUTING -o ${br_dev} -s ${router_dev_mac} -j DROP
+ebtables -t nat -I POSTROUTING -s ${br_dev_mac} -j DROP
+ebtables -t nat -I POSTROUTING -s ${victim_dev_mac} -j DROP
+ebtables -t nat -I POSTROUTING -s ${router_dev_mac} -j DROP
 
 # Make sure we don't send any traffic of our own to Multicast or Bridge Group Addresses
-ebtables -t filter -I OUTPUT -o ${br_dev} -d Multicast -j DROP
-ebtables -t filter -I OUTPUT -o ${br_dev} -d BGA -j DROP
+ebtables -t filter -I OUTPUT -d Multicast -j DROP
+ebtables -t filter -I OUTPUT -d BGA -j DROP
 
 # Make sure the bridge is up
 if ! brctl show $br_dev > /dev/null 2>&1 ; then
@@ -142,7 +135,7 @@ echo "Got Victim ${victim_mac} (${victim_ip})"
 # Rules are sorted in reverse order because they are inserted at the top of the list, and
 # therefore get pushed down as each new entry is added
 # This is particularly important for ebtables, because we need to be before the "safety" rules
-ebtables -t nat -I POSTROUTING -o ${br_dev} -s ${br_dev_mac} ! -d $victim_mac -j snat --to-source $victim_mac
+ebtables -t nat -I POSTROUTING -s ${br_dev_mac} ! -d $victim_mac -j snat --to-source $victim_mac
 iptables -t nat -I POSTROUTING -o ${br_dev} -s ${br_dev_ip}  ! -d $victim_ip -j SNAT --to $victim_ip
 
 # We special case TCP and UDP to be able to rewrite the source ports so as not to stand out
@@ -172,11 +165,12 @@ iptables -t nat -A REDSOCKS -p tcp -j REDIRECT --to-ports 12345
 screen -S pitm -X screen -t "iftop" /usr/sbin/iftop -npNP -i pitm
 
 # dnsmasq can make the observed DNS queries available without any extra network traffic
+mkdir -p /etc/netns/pitm/ && touch /etc/netns/pitm/resolv.conf
 screen -S pitm -X screen -t "dnsmasq" /usr/sbin/dnsmasq --no-daemon --no-resolv -z -i lo --hostsdir=/tmp/pitm/hostsdir --bogus-priv
 
 # keep a tcpdump of the observed traffic on the bridge
 STAMP=$(date +%C%y%m%d_%H%M%S)
-screen -S pitm -X screen -t "tcpdump" /usr/bin/tcpdump -nli pitm -w ${DIR}/pitm-${STAMP}.pcap
+screen -S pitm -X screen -t "tcpdump" tcpdump -nli pitm -w ${DIR}/pitm-${STAMP}.pcap
 
 echo "Press Ctrl-C to close this window"
 while sleep 1 ; do : ; done
