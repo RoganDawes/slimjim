@@ -1,5 +1,7 @@
 #!/bin/bash
 
+screen -R -D -S pitm && exit
+
 # Override the various device names if required
 victim_dev=${victim_dev:-lan}
 router_dev=${router_dev:-wan}
@@ -12,8 +14,13 @@ br_dev_mac=${br_dev_mac:-0:1:1:1:1:1}
 br_dev_ip=${br_dev_ip:-169.254.0.1}
 
 PID=$$
-# Check if we are in the 'pitm' network namespace
+# Check if we are not in the 'pitm' network namespace
 if [ "`ip netns identify $PID`" != "pitm" ] ; then
+
+	# make a directory to contain namespace-specific files
+	mkdir -p /etc/netns/pitm/
+	touch /etc/netns/pitm/resolv.conf
+	echo "pitm" > /etc/netns/pitm/hostname
 
 	# Check if the network namespace exists, or create a network namespace to run pitm operations in
 	# Make sure that the $victim_dev and $router_dev interfaces are inside the namespace
@@ -165,8 +172,11 @@ iptables -t nat -A REDSOCKS -p tcp -j REDIRECT --to-ports 12345
 screen -S pitm -X screen -t "iftop" /usr/sbin/iftop -npNP -i pitm
 
 # dnsmasq can make the observed DNS queries available without any extra network traffic
-mkdir -p /etc/netns/pitm/ && touch /etc/netns/pitm/resolv.conf
 screen -S pitm -X screen -t "dnsmasq" /usr/sbin/dnsmasq --no-daemon --no-resolv -z -i lo --hostsdir=/tmp/pitm/hostsdir --bogus-priv
+
+# keep a tcpdump of the observed traffic on the bridge
+STAMP=$(date +%C%y%m%d_%H%M%S)
+screen -S pitm -X screen -t "tcpdump" /usr/bin/tcpdump -nli pitm -w ${DIR}/pitm-${STAMP}.pcap
 
 echo "Press Ctrl-C to close this window"
 while sleep 1 ; do : ; done
